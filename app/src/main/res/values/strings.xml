@@ -1,9 +1,0 @@
-<resources>
-    <string name="app_name">Parametric EQ</string>
-    <string name="start">Start</string>
-    <string name="stop">Stop</string>
-    <string name="status_stopped">Stopped</string>
-    <string name="status_running">Running \u2014 open another music/video app</string>
-    <string name="status_permission_denied">Permission denied</string>
-    <string name="notification_title">Parametric EQ running</string>
-</resources>
