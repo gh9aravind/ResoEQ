@@ -69,9 +69,10 @@ class CaptureService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat()
 
-        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, -1) ?: -1
+        val hasResultCode = intent?.hasExtra(EXTRA_RESULT_CODE) == true
+        val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         val resultData = intent?.let { getIntentExtraCompat(it, EXTRA_RESULT_DATA) }
-        if (resultCode == -1 || resultData == null) {
+        if (!hasResultCode || resultData == null) {
             Log.e(TAG, "Missing MediaProjection result, stopping")
             stopSelf()
             return START_NOT_STICKY
