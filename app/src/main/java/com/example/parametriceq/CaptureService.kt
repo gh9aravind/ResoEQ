@@ -7,7 +7,9 @@ import android.app.Service
 import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.media.AudioAttributes
+import android.media.AudioFocusRequest
 import android.media.AudioFormat
+import android.media.AudioManager
 import android.media.AudioPlaybackCaptureConfiguration
 import android.media.AudioRecord
 import android.media.AudioTrack
@@ -64,11 +66,14 @@ class CaptureService : Service() {
     private var mediaProjection: MediaProjection? = null
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
+    private var audioFocusRequest: AudioFocusRequest? = null
     @Volatile private var running = false
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         startForegroundCompat()
 
+        // NOTE: Activity.RESULT_OK is -1, so -1 can't be used as a "missing" sentinel
+        // (that was the earlier bug: a *successful* permission grant looked "missing").
         val hasResultCode = intent?.hasExtra(EXTRA_RESULT_CODE) == true
         val resultCode = intent?.getIntExtra(EXTRA_RESULT_CODE, Int.MIN_VALUE) ?: Int.MIN_VALUE
         val resultData = intent?.let { getIntentExtraCompat(it, EXTRA_RESULT_DATA) }
@@ -77,6 +82,7 @@ class CaptureService : Service() {
             stopSelf()
             return START_NOT_STICKY
         }
+        Log.i(TAG, "Got MediaProjection result, resultCode=$resultCode")
         val initialGains = intent.getFloatArrayExtra(EXTRA_BAND_GAINS)
 
         val projectionManager = getSystemService(MediaProjectionManager::class.java)
@@ -105,6 +111,8 @@ class CaptureService : Service() {
     private fun startCapture(initialGains: FloatArray?) {
         val projection = mediaProjection ?: return
 
+        requestAudioFocus()
+
         val sampleRate = 48000
         val channelInMask = AudioFormat.CHANNEL_IN_STEREO
         val channelOutMask = AudioFormat.CHANNEL_OUT_STEREO
@@ -130,7 +138,7 @@ class CaptureService : Service() {
 
         val record = AudioRecord.Builder()
             .setAudioFormat(recordFormat)
-            .setBufferSizeInBytes(minInBuf * 2)
+            .setBufferSizeInBytes(minInBuf)
             .setAudioPlaybackCaptureConfig(captureConfig)
             .build()
 
@@ -139,6 +147,9 @@ class CaptureService : Service() {
                 AudioAttributes.Builder()
                     .setUsage(AudioAttributes.USAGE_MEDIA)
                     .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    // Critical: without this, our own EQ'd output (also USAGE_MEDIA)
+                    // gets captured again by our own AudioRecord, creating a
+                    // runaway feedback loop (echo that speeds up and gets louder).
                     .setAllowedCapturePolicy(AudioAttributes.ALLOW_CAPTURE_BY_NONE)
                     .build()
             )
@@ -149,7 +160,7 @@ class CaptureService : Service() {
                     .setChannelMask(channelOutMask)
                     .build()
             )
-            .setBufferSizeInBytes(minOutBuf * 2)
+            .setBufferSizeInBytes(minOutBuf)
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
@@ -164,6 +175,7 @@ class CaptureService : Service() {
         record.startRecording()
         track.play()
         running = true
+        Log.i(TAG, "Capture pipeline started, sessionId=${track.audioSessionId}")
 
         thread(name = "eq-capture-thread") {
             val buffer = ShortArray(minInBuf)
@@ -174,6 +186,20 @@ class CaptureService : Service() {
                 }
             }
         }
+    }
+
+    private fun requestAudioFocus() {
+        val audioManager = getSystemService(AudioManager::class.java) ?: return
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+        val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(attrs)
+            .setOnAudioFocusChangeListener { }
+            .build()
+        audioFocusRequest = request
+        audioManager.requestAudioFocus(request)
     }
 
     private fun setupEq(sessionId: Int, initialGains: FloatArray?) {
@@ -234,6 +260,9 @@ class CaptureService : Service() {
         audioTrack?.release()
         dynamicsProcessing?.release()
         dynamicsProcessing = null
+        audioFocusRequest?.let {
+            getSystemService(AudioManager::class.java)?.abandonAudioFocusRequest(it)
+        }
         mediaProjection?.stop()
         mediaProjection = null
         super.onDestroy()
