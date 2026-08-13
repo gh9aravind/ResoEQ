@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base Theme -->
+    <style name="Theme.Tunex" parent="android:Theme.Material.NoActionBar">
+        <item name="android:colorPrimary">@color/tunex_primary</item>
+        <item name="android:colorPrimaryDark">@color/tunex_primary_dark</item>
+        <item name="android:colorAccent">@color/tunex_accent</item>
+        <item name="android:windowBackground">@color/surface_dark</item>
+        <item name="android:statusBarColor">@android:color/transparent</item>
+        <item name="android:navigationBarColor">@android:color/transparent</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowLightNavigationBar">false</item>
+        <item name="android:windowDrawsSystemBarBackgrounds">true</item>
+        <item name="android:enforceNavigationBarContrast">false</item>
+        <item name="android:enforceStatusBarContrast">false</item>
+    </style>
+    
+    <!-- Splash Screen Theme -->
+    <style name="Theme.Tunex.Splash" parent="Theme.Tunex">
+        <item name="android:windowSplashScreenBackground">@color/splash_background</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher</item>
+        <item name="android:windowSplashScreenAnimationDuration">500</item>
+    </style>
+</resources>
