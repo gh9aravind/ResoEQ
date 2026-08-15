@@ -67,6 +67,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _equalizerBands = MutableStateFlow(List(10) { 0f })
     val equalizerBands: StateFlow<List<Float>> = _equalizerBands.asStateFlow()
     
+    // Parametric EQ: adjustable center frequency per band (Hz)
+    private val _bandFrequencies = MutableStateFlow(
+        AudioEngineController.DEFAULT_FREQUENCIES.map { it }
+    )
+    val bandFrequencies: StateFlow<List<Float>> = _bandFrequencies.asStateFlow()
+    
     // Advanced Settings State
     private val _advancedSettings = MutableStateFlow(AdvancedAudioSettings())
     val advancedSettings: StateFlow<AdvancedAudioSettings> = _advancedSettings.asStateFlow()
@@ -183,13 +189,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     
+    /** Parametric control: move a band's center frequency, in Hz. Applies live, no capture needed. */
+    fun setBandFrequency(bandIndex: Int, freqHz: Float) {
+        val newFreqs = _bandFrequencies.value.toMutableList()
+        newFreqs[bandIndex] = freqHz.coerceIn(20f, 20000f)
+        _bandFrequencies.value = newFreqs
+        
+        audioService?.getAudioEngine()?.setBandFrequency(bandIndex, freqHz)
+    }
+    
     fun resetEqualizer() {
         val flatBands = List(10) { 0f }
         _equalizerBands.value = flatBands
+        _bandFrequencies.value = AudioEngineController.DEFAULT_FREQUENCIES.map { it }
         
         viewModelScope.launch {
             settingsRepository.setCustomEqualizerBands(flatBands)
             audioService?.applyEqualizerBands(flatBands)
+            AudioEngineController.DEFAULT_FREQUENCIES.forEachIndexed { index, freq ->
+                audioService?.getAudioEngine()?.setBandFrequency(index, freq)
+            }
         }
     }
     
