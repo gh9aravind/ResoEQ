@@ -3,6 +3,7 @@ package com.tunex.ui.screens
 import androidx.compose.animation.*
 import androidx.compose.animation.core.*
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -35,8 +36,12 @@ fun EqualizerScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val equalizerBands by viewModel.equalizerBands.collectAsState()
+    val bandFrequencies by viewModel.bandFrequencies.collectAsState()
     
     val scrollState = rememberScrollState()
+    
+    var parametricMode by remember { mutableStateOf(false) }
+    var selectedBand by remember { mutableIntStateOf(0) }
     
     // Frequency labels for 10-band EQ
     val frequencyLabels = listOf(
@@ -53,6 +58,13 @@ fun EqualizerScreen(
     )
     
     var selectedPreset by remember { mutableStateOf<String?>(null) }
+    
+    // Frequency sliders use a log scale (20Hz-20kHz) since that's how pitch is perceived.
+    fun sliderToFreq(t: Float): Float = 20f * Math.pow(1000.0, t.toDouble()).toFloat()
+    fun freqToSlider(freq: Float): Float =
+        (Math.log10((freq / 20f).toDouble()) / Math.log10(1000.0)).toFloat().coerceIn(0f, 1f)
+    fun formatFreq(freq: Float): String =
+        if (freq >= 1000f) "${"%.1f".format(freq / 1000f)} kHz" else "${freq.toInt()} Hz"
     
     Box(
         modifier = Modifier
@@ -91,6 +103,14 @@ fun EqualizerScreen(
                     }
                 },
                 actions = {
+                    // Parametric mode toggle
+                    IconButton(onClick = { parametricMode = !parametricMode }) {
+                        Icon(
+                            Icons.Default.Tune,
+                            contentDescription = "Toggle Parametric Mode",
+                            tint = if (parametricMode) EqBandColor1 else TextSecondary
+                        )
+                    }
                     // Reset button
                     IconButton(onClick = { viewModel.resetEqualizer() }) {
                         Icon(
@@ -182,16 +202,73 @@ fun EqualizerScreen(
                             horizontalArrangement = Arrangement.SpaceEvenly
                         ) {
                             equalizerBands.forEachIndexed { index, value ->
-                                EqualizerBandSlider(
-                                    value = value,
-                                    onValueChange = { newValue ->
-                                        viewModel.setEqualizerBand(index, newValue)
-                                        selectedPreset = null
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .then(
+                                            if (parametricMode) Modifier.clickable { selectedBand = index }
+                                            else Modifier
+                                        )
+                                        .then(
+                                            if (parametricMode && selectedBand == index) {
+                                                Modifier.background(
+                                                    bandColors[index].copy(alpha = 0.12f),
+                                                    RoundedCornerShape(12.dp)
+                                                )
+                                            } else Modifier
+                                        )
+                                ) {
+                                    EqualizerBandSlider(
+                                        value = value,
+                                        onValueChange = { newValue ->
+                                            viewModel.setEqualizerBand(index, newValue)
+                                            selectedPreset = null
+                                        },
+                                        frequencyLabel = if (parametricMode)
+                                            formatFreq(bandFrequencies.getOrElse(index) { 1000f })
+                                        else frequencyLabels[index],
+                                        modifier = Modifier.fillMaxWidth(),
+                                        barColor = bandColors[index],
+                                        glowColor = bandColors[index].copy(alpha = 0.4f),
+                                        enabled = uiState.isMasterEnabled
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                AnimatedVisibility(visible = parametricMode) {
+                    Column {
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        // Parametric frequency control for the selected band
+                        GlassmorphicCard(
+                            modifier = Modifier.fillMaxWidth(),
+                            cornerRadius = 20.dp,
+                            glassOpacity = 0.08f
+                        ) {
+                            Column(modifier = Modifier.padding(20.dp)) {
+                                Text(
+                                    text = "Band ${selectedBand + 1} Frequency",
+                                    style = TunexTypography.titleSmall,
+                                    color = TextPrimary
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Drag to move the center of this band. Gain is set above as usual.",
+                                    style = TunexTypography.bodySmall,
+                                    color = TextTertiary
+                                )
+                                Spacer(modifier = Modifier.height(16.dp))
+                                HorizontalSliderWithLabel(
+                                    value = freqToSlider(bandFrequencies.getOrElse(selectedBand) { 1000f }),
+                                    onValueChange = { t ->
+                                        viewModel.setBandFrequency(selectedBand, sliderToFreq(t))
                                     },
-                                    frequencyLabel = frequencyLabels[index],
-                                    modifier = Modifier.weight(1f),
-                                    barColor = bandColors[index],
-                                    glowColor = bandColors[index].copy(alpha = 0.4f),
+                                    label = "",
+                                    displayValue = formatFreq(bandFrequencies.getOrElse(selectedBand) { 1000f }),
+                                    activeColor = bandColors[selectedBand],
                                     enabled = uiState.isMasterEnabled
                                 )
                             }

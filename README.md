@@ -124,6 +124,29 @@ equalizer - this one included - can affect it. This isn't a bug we can fix
 here; it would require capturing system audio output instead (a different,
 more complex approach with its own trade-offs).
 
+## Advanced Player Tracking (experimental, added in this copy)
+
+A new "Advanced Player Tracking" section in the Advanced screen adds a
+second, best-effort way to find sessions - on top of, not instead of, the
+global-session-0 and broadcast-based tracking that already covers most
+apps. It combines:
+
+- **DUMP permission** (ADB-only: `adb shell pm grant <package>
+  android.permission.DUMP`) - lets `DumpSessionScanner` read AudioFlinger's
+  internal debug dump and pull out session IDs for apps that don't
+  broadcast (Spotify, YouTube Music).
+- **Notification access** (Settings toggle, not ADB) - `TunexNotificationListener`
+  notices when a media player's notification appears/changes and triggers
+  an immediate rescan, backed by a periodic scan every 10s regardless.
+
+Off by default - toggle it on in Advanced once both permissions show
+granted. **Read the caveat in `DumpSessionScanner.kt`**: this reaches into
+an undocumented, hidden system API and parses human-readable debug text,
+not a stable interface. It's wrapped defensively so a failure here can't
+affect anything that already works (global session 0, broadcast tracking) -
+worst case it just doesn't find extra sessions on some devices/Android
+versions.
+
 ## Known Issues
 
 - Some apps with their own audio processing might conflict

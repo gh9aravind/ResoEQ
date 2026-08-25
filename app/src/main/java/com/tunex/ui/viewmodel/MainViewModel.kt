@@ -5,8 +5,11 @@ import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.os.IBinder
+import android.provider.Settings
 import android.util.Log
+import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.tunex.audio.engine.AudioEngineController
@@ -66,6 +69,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     // EQ State
     private val _equalizerBands = MutableStateFlow(List(10) { 0f })
     val equalizerBands: StateFlow<List<Float>> = _equalizerBands.asStateFlow()
+    
+    // Parametric EQ: adjustable center frequency per band (Hz)
+    private val _bandFrequencies = MutableStateFlow(
+        AudioEngineController.DEFAULT_FREQUENCIES.map { it }
+    )
+    val bandFrequencies: StateFlow<List<Float>> = _bandFrequencies.asStateFlow()
+
+    // Advanced Player Tracking (experimental) - off by default, user opts in
+    // from AdvancedScreen once both permissions below are granted.
+    private val _advancedTrackingEnabled = MutableStateFlow(false)
+    val advancedTrackingEnabled: StateFlow<Boolean> = _advancedTrackingEnabled.asStateFlow()
+
+    fun setAdvancedTrackingEnabled(enabled: Boolean) {
+        _advancedTrackingEnabled.value = enabled
+        audioService?.setAdvancedTrackingEnabled(enabled)
+    }
+
+    /** DUMP is only grantable via `adb shell pm grant <package> android.permission.DUMP`. */
+    fun isDumpPermissionGranted(): Boolean {
+        val context = getApplication<Application>()
+        return context.checkSelfPermission("android.permission.DUMP") == PackageManager.PERMISSION_GRANTED
+    }
+
+    /** Notification access is a user toggle in Settings, not a normal runtime permission. */
+    fun isNotificationListenerEnabled(): Boolean {
+        val context = getApplication<Application>()
+        return NotificationManagerCompat.getEnabledListenerPackages(context)
+            .contains(context.packageName)
+    }
+
+    fun notificationListenerSettingsIntent(): Intent {
+        return Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        }
+    }
     
     // Advanced Settings State
     private val _advancedSettings = MutableStateFlow(AdvancedAudioSettings())
@@ -183,13 +221,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
     
+    /** Parametric control: move a band's center frequency, in Hz. Applies live, no capture needed. */
+    fun setBandFrequency(bandIndex: Int, freqHz: Float) {
+        val newFreqs = _bandFrequencies.value.toMutableList()
+        newFreqs[bandIndex] = freqHz.coerceIn(20f, 20000f)
+        _bandFrequencies.value = newFreqs
+        
+        audioService?.getAudioEngine()?.setBandFrequency(bandIndex, freqHz)
+    }
+    
     fun resetEqualizer() {
         val flatBands = List(10) { 0f }
         _equalizerBands.value = flatBands
+        _bandFrequencies.value = AudioEngineController.DEFAULT_FREQUENCIES.map { it }
         
         viewModelScope.launch {
             settingsRepository.setCustomEqualizerBands(flatBands)
             audioService?.applyEqualizerBands(flatBands)
+            AudioEngineController.DEFAULT_FREQUENCIES.forEachIndexed { index, freq ->
+                audioService?.getAudioEngine()?.setBandFrequency(index, freq)
+            }
         }
     }
     

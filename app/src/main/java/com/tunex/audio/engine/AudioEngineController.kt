@@ -15,19 +15,28 @@ class AudioEngineController(private val context: Context) {
     companion object {
         private const val TAG = "AudioEngineController"
         private const val PRIORITY = 1 // Higher priority than other equalizers
+        private const val CHANNEL_COUNT = 2
+        const val PARAMETRIC_BAND_COUNT = 10
         
-        // Standard 10-band frequencies
-        val FREQUENCIES = intArrayOf(31, 62, 125, 250, 500, 1000, 2000, 4000, 8000, 16000)
+        // Default band center/cutoff frequencies (Hz) - user-adjustable at runtime now.
+        val DEFAULT_FREQUENCIES = floatArrayOf(31f, 62f, 125f, 250f, 500f, 1000f, 2000f, 4000f, 8000f, 16000f)
     }
     
     private val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     
     // Audio effects per session
-    private val equalizers = ConcurrentHashMap<Int, Equalizer>()
+    private val dynamicsProcessors = ConcurrentHashMap<Int, DynamicsProcessing>()
     private val bassBoosts = ConcurrentHashMap<Int, BassBoost>()
     private val virtualizers = ConcurrentHashMap<Int, Virtualizer>()
     private val presetReverbs = ConcurrentHashMap<Int, PresetReverb>()
     private val loudnessEnhancers = ConcurrentHashMap<Int, LoudnessEnhancer>()
+
+    // Source of truth for parametric band settings, shared across every active
+    // session and used to seed any newly-opened session. Android's built-in
+    // effects don't expose a Q/bandwidth control - only center frequency and
+    // gain per band - so that's what's adjustable here.
+    private val bandFrequencies = DEFAULT_FREQUENCIES.copyOf()
+    private val bandGains = FloatArray(PARAMETRIC_BAND_COUNT)
     
     // State flows
     private val _engineState = MutableStateFlow(EngineState())
@@ -101,13 +110,32 @@ class AudioEngineController(private val context: Context) {
     }
     
     private fun createEqualizerForSession(sessionId: Int) {
-        if (equalizers.containsKey(sessionId)) return
+        if (dynamicsProcessors.containsKey(sessionId)) return
         
-        val eq = Equalizer(PRIORITY, sessionId).apply {
-            enabled = true
+        try {
+            val config = DynamicsProcessing.Config.Builder(
+                DynamicsProcessing.VARIANT_FAVOR_FREQUENCY_RESOLUTION,
+                CHANNEL_COUNT,
+                true, PARAMETRIC_BAND_COUNT, // preEq in use, this many bands
+                false, 0,
+                false, 0,
+                false
+            ).build()
+            
+            val dp = DynamicsProcessing(PRIORITY, sessionId, config)
+            for (ch in 0 until CHANNEL_COUNT) {
+                for (i in 0 until PARAMETRIC_BAND_COUNT) {
+                    dp.setPreEqBandByChannelIndex(
+                        ch, i, DynamicsProcessing.EqBand(true, bandFrequencies[i], bandGains[i])
+                    )
+                }
+            }
+            dp.enabled = true
+            dynamicsProcessors[sessionId] = dp
+            Log.d(TAG, "Parametric EQ created for session $sessionId, bands: $PARAMETRIC_BAND_COUNT")
+        } catch (e: Exception) {
+            Log.w(TAG, "DynamicsProcessing not supported for session $sessionId", e)
         }
-        equalizers[sessionId] = eq
-        Log.d(TAG, "Equalizer created for session $sessionId, bands: ${eq.numberOfBands}")
     }
     
     private fun createBassBoostForSession(sessionId: Int) {
@@ -168,24 +196,22 @@ class AudioEngineController(private val context: Context) {
     }
     
     /**
-     * Apply equalizer bands to a session
+     * Apply equalizer band gains to a session (keeps current frequencies unchanged).
      */
     fun applyEqualizerBands(sessionId: Int, bands: List<Float>): Boolean {
-        val eq = equalizers[sessionId] ?: return false
+        val dp = dynamicsProcessors[sessionId] ?: return false
         
         return try {
-            val numBands = eq.numberOfBands.toInt()
-            val bandRange = eq.bandLevelRange
-            val minLevel = bandRange[0]
-            val maxLevel = bandRange[1]
-            
-            bands.take(numBands).forEachIndexed { index, dbValue ->
-                // Convert dB to millibels and clamp to valid range
-                val mbValue = (dbValue * 100).toInt().coerceIn(minLevel.toInt(), maxLevel.toInt()).toShort()
-                eq.setBandLevel(index.toShort(), mbValue)
+            bands.take(PARAMETRIC_BAND_COUNT).forEachIndexed { index, dbValue ->
+                val clamped = dbValue.coerceIn(-15f, 15f)
+                bandGains[index] = clamped
+                for (ch in 0 until CHANNEL_COUNT) {
+                    dp.setPreEqBandByChannelIndex(
+                        ch, index, DynamicsProcessing.EqBand(true, bandFrequencies[index], clamped)
+                    )
+                }
             }
-            
-            eq.enabled = true
+            dp.enabled = true
             Log.d(TAG, "Applied EQ bands to session $sessionId")
             true
         } catch (e: Exception) {
@@ -193,6 +219,58 @@ class AudioEngineController(private val context: Context) {
             false
         }
     }
+    
+    /**
+     * Set one band's center frequency (Hz), applied to every active session.
+     * This is the actual "parametric" part - Android's built-in effects don't
+     * expose Q/bandwidth, so frequency + gain are what's adjustable per band.
+     */
+    fun setBandFrequency(bandIndex: Int, freqHz: Float): Boolean {
+        if (bandIndex !in 0 until PARAMETRIC_BAND_COUNT) return false
+        val clamped = freqHz.coerceIn(20f, 20000f)
+        bandFrequencies[bandIndex] = clamped
+        var success = true
+        dynamicsProcessors.forEach { (sessionId, dp) ->
+            try {
+                for (ch in 0 until CHANNEL_COUNT) {
+                    dp.setPreEqBandByChannelIndex(
+                        ch, bandIndex, DynamicsProcessing.EqBand(true, clamped, bandGains[bandIndex])
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to set band $bandIndex frequency for session $sessionId", e)
+                success = false
+            }
+        }
+        return success
+    }
+    
+    /** Set one band's gain (dB), applied to every active session. */
+    fun setBandGain(bandIndex: Int, gainDb: Float): Boolean {
+        if (bandIndex !in 0 until PARAMETRIC_BAND_COUNT) return false
+        val clamped = gainDb.coerceIn(-15f, 15f)
+        bandGains[bandIndex] = clamped
+        var success = true
+        dynamicsProcessors.forEach { (sessionId, dp) ->
+            try {
+                for (ch in 0 until CHANNEL_COUNT) {
+                    dp.setPreEqBandByChannelIndex(
+                        ch, bandIndex, DynamicsProcessing.EqBand(true, bandFrequencies[bandIndex], clamped)
+                    )
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to set band $bandIndex gain for session $sessionId", e)
+                success = false
+            }
+        }
+        return success
+    }
+    
+    /** Current frequency for every band, in Hz. */
+    fun getBandFrequencies(): List<Float> = bandFrequencies.toList()
+    
+    /** Current gain for every band, in dB. */
+    fun getBandGains(): List<Float> = bandGains.toList()
     
     /**
      * Apply equalizer bands to all active sessions
@@ -360,7 +438,7 @@ class AudioEngineController(private val context: Context) {
      * Enable or disable all effects for a session
      */
     fun setSessionEnabled(sessionId: Int, enabled: Boolean) {
-        equalizers[sessionId]?.enabled = enabled
+        dynamicsProcessors[sessionId]?.enabled = enabled
         bassBoosts[sessionId]?.enabled = enabled && (bassBoosts[sessionId]?.roundedStrength ?: 0) > 0
         virtualizers[sessionId]?.enabled = enabled && (virtualizers[sessionId]?.roundedStrength ?: 0) > 0
         presetReverbs[sessionId]?.enabled = enabled
@@ -380,49 +458,27 @@ class AudioEngineController(private val context: Context) {
     }
     
     /**
-     * Get current EQ band levels for a session
+     * Get current EQ band gains (shared across all sessions).
      */
     fun getEqualizerBands(sessionId: Int): List<Float>? {
-        val eq = equalizers[sessionId] ?: return null
-        
-        return try {
-            (0 until eq.numberOfBands).map { band ->
-                eq.getBandLevel(band.toShort()).toFloat() / 100f // millibels to dB
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get EQ bands", e)
-            null
-        }
+        if (!dynamicsProcessors.containsKey(sessionId)) return null
+        return bandGains.toList()
     }
     
     /**
-     * Get supported band level range
+     * Get supported band gain range in dB.
      */
     fun getBandLevelRange(sessionId: Int): Pair<Int, Int>? {
-        val eq = equalizers[sessionId] ?: return null
-        
-        return try {
-            val range = eq.bandLevelRange
-            Pair(range[0].toInt() / 100, range[1].toInt() / 100) // millibels to dB
-        } catch (e: Exception) {
-            null
-        }
+        if (!dynamicsProcessors.containsKey(sessionId)) return null
+        return Pair(-15, 15)
     }
     
     /**
-     * Get center frequencies for all bands
+     * Get current center frequencies for all bands, in Hz (user-adjustable).
      */
     fun getCenterFrequencies(sessionId: Int): List<Int>? {
-        val eq = equalizers[sessionId] ?: return null
-        
-        return try {
-            (0 until eq.numberOfBands).map { band ->
-                eq.getCenterFreq(band.toShort()) / 1000 // milliHz to Hz
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to get frequencies", e)
-            null
-        }
+        if (!dynamicsProcessors.containsKey(sessionId)) return null
+        return bandFrequencies.map { it.toInt() }
     }
     
     /**
@@ -430,7 +486,7 @@ class AudioEngineController(private val context: Context) {
      */
     fun releaseSession(sessionId: Int) {
         try {
-            equalizers.remove(sessionId)?.release()
+            dynamicsProcessors.remove(sessionId)?.release()
             bassBoosts.remove(sessionId)?.release()
             virtualizers.remove(sessionId)?.release()
             presetReverbs.remove(sessionId)?.release()

@@ -27,6 +27,16 @@
     <!-- Vibration for haptic feedback -->
     <uses-permission android:name="android.permission.VIBRATE" />
 
+    <!--
+      Advanced Player Tracking (experimental, off by default).
+      DUMP is a protected/signature permission - it can only be granted via
+      ADB: `adb shell pm grant <package> android.permission.DUMP`. Without
+      that grant, DumpSessionScanner simply finds nothing and this has no
+      effect on anything else in the app.
+    -->
+    <uses-permission android:name="android.permission.DUMP"
+        tools:ignore="ProtectedPermissions" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -85,6 +95,22 @@
                 <action android:name="android.media.action.CLOSE_AUDIO_EFFECT_CONTROL_SESSION" />
             </intent-filter>
         </receiver>
+
+        <!--
+          Advanced Player Tracking (experimental). Granted manually by the
+          user via Settings > Notification access - not via ADB. Only used
+          to notice when a media notification appears/changes, as a trigger
+          to rescan for new sessions; see TunexNotificationListener.kt.
+        -->
+        <service
+            android:name=".receiver.TunexNotificationListener"
+            android:label="Tunex Player Tracking"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
         
     </application>
 

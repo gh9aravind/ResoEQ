@@ -19,6 +19,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.tunex.data.model.OutputMode
 import com.tunex.data.model.ReverbPreset
@@ -36,6 +39,14 @@ fun AdvancedScreen(
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val advancedSettings by viewModel.advancedSettings.collectAsState()
+    val advancedTrackingEnabled by viewModel.advancedTrackingEnabled.collectAsState()
+    
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
+    var refreshTrigger by remember { mutableIntStateOf(0) }
+    val dumpGranted = remember(refreshTrigger) { viewModel.isDumpPermissionGranted() }
+    val notifGranted = remember(refreshTrigger) { viewModel.isNotificationListenerEnabled() }
+    val packageName = context.packageName
     
     val scrollState = rememberScrollState()
     
@@ -429,6 +440,113 @@ fun AdvancedScreen(
                     }
                 }
                 
+                Spacer(modifier = Modifier.height(16.dp))
+                
+                // Advanced Player Tracking (experimental)
+                SectionHeader(title = "Advanced Player Tracking")
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                GlassmorphicCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    cornerRadius = 16.dp
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "Experimental. Finds sessions for apps that don't announce " +
+                                "themselves (e.g. Spotify), on top of the normal tracking that " +
+                                "already covers most players. Two permissions needed.",
+                            style = TunexTypography.bodySmall,
+                            color = TextTertiary
+                        )
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        val dumpCommand = "adb shell pm grant $packageName android.permission.DUMP"
+                        Text(
+                            text = "DUMP permission - lets us read the list of currently " +
+                                "playing sessions. Only grantable via ADB from a computer " +
+                                "(tap to copy the command):",
+                            style = TunexTypography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        Text(
+                            text = dumpCommand,
+                            style = TunexTypography.bodySmall,
+                            color = TunexPrimary,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(SurfaceContainerHigh)
+                                .clickable { clipboard.setText(AnnotatedString(dumpCommand)) }
+                                .padding(12.dp)
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        PermissionStatusRow(granted = dumpGranted, label = "DUMP permission")
+                        
+                        Spacer(modifier = Modifier.height(16.dp))
+                        HorizontalDivider(color = SurfaceContainerHigh)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Text(
+                            text = "Notification access - lets us notice when a media " +
+                                "player's notification appears, as a trigger to check for " +
+                                "new sessions. We only check whether a notification is a " +
+                                "media player's, never its content.",
+                            style = TunexTypography.bodySmall,
+                            color = TextSecondary
+                        )
+                        Spacer(modifier = Modifier.height(8.dp))
+                        PermissionStatusRow(granted = notifGranted, label = "Notification access")
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedButton(
+                            onClick = { context.startActivity(viewModel.notificationListenerSettingsIntent()) },
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Text("Open Notification Access Settings")
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        TextButton(
+                            onClick = { refreshTrigger++ },
+                            modifier = Modifier.align(Alignment.End)
+                        ) {
+                            Text("Refresh status")
+                        }
+                        
+                        Spacer(modifier = Modifier.height(8.dp))
+                        HorizontalDivider(color = SurfaceContainerHigh)
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = "Enable Advanced Tracking",
+                                    style = TunexTypography.titleSmall,
+                                    color = TextPrimary
+                                )
+                                Text(
+                                    text = if (dumpGranted && notifGranted)
+                                        "Both permissions granted"
+                                    else "Needs both permissions above first",
+                                    style = TunexTypography.bodySmall,
+                                    color = TextTertiary
+                                )
+                            }
+                            TunexSwitch(
+                                checked = advancedTrackingEnabled,
+                                onCheckedChange = { viewModel.setAdvancedTrackingEnabled(it) },
+                                activeColor = TunexPrimary,
+                                enabled = dumpGranted && notifGranted
+                            )
+                        }
+                    }
+                }
+                
                 Spacer(modifier = Modifier.height(100.dp))
             }
         }
@@ -521,3 +639,21 @@ private fun AdvancedSettingCard(
 // Extension to support icon
 private val Icons.Outlined.Surround: ImageVector
     get() = Icons.Outlined.SurroundSound
+
+@Composable
+private fun PermissionStatusRow(granted: Boolean, label: String) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Icon(
+            imageVector = if (granted) Icons.Default.CheckCircle else Icons.Default.Cancel,
+            contentDescription = null,
+            tint = if (granted) StatusSuccess else TextTertiary,
+            modifier = Modifier.size(18.dp)
+        )
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(
+            text = "$label - ${if (granted) "granted" else "not granted"}",
+            style = TunexTypography.bodySmall,
+            color = if (granted) TextPrimary else TextTertiary
+        )
+    }
+}

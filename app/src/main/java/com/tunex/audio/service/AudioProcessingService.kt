@@ -40,6 +40,7 @@ class AudioProcessingService : Service() {
         const val ACTION_STOP = "com.tunex.action.STOP"
         const val ACTION_TOGGLE = "com.tunex.action.TOGGLE"
         const val ACTION_UPDATE_PROFILE = "com.tunex.action.UPDATE_PROFILE"
+        const val ACTION_RESCAN_SESSIONS = "com.tunex.action.RESCAN_SESSIONS"
         
         fun startService(context: Context) {
             val intent = Intent(context, AudioProcessingService::class.java).apply {
@@ -137,6 +138,7 @@ class AudioProcessingService : Service() {
                 val sessionId = intent.getIntExtra("session_id", -1)
                 if (sessionId > 0) detachSession(sessionId)
             }
+            ACTION_RESCAN_SESSIONS -> scanForAdditionalSessions()
             else -> startAudioProcessing()
         }
         
@@ -164,6 +166,47 @@ class AudioProcessingService : Service() {
         updateState { it.copy(activeSessionCount = audioEngine.activeSessions.value.size) }
         Log.d(TAG, "Detached EQ from session $sessionId")
     }
+
+    /**
+     * "Advanced Player Tracking": uses DumpSessionScanner (needs the DUMP
+     * permission, ADB-only) to find sessions from apps that don't broadcast.
+     * Off by default - enabled via enableAdvancedTracking(). Safe to call
+     * even when disabled or unsupported: everything inside is defensive.
+     */
+    private fun scanForAdditionalSessions() {
+        if (!advancedTrackingEnabled) return
+        serviceScope.launch(Dispatchers.IO) {
+            val found = com.tunex.audio.engine.DumpSessionScanner.scanForSessionIds()
+            val newOnes = found - audioEngine.activeSessions.value
+            if (newOnes.isNotEmpty()) {
+                Log.d(TAG, "Advanced tracking found new sessions: $newOnes")
+            }
+            withContext(Dispatchers.Main) {
+                newOnes.forEach { sessionId -> attachSession(sessionId) }
+            }
+        }
+    }
+
+    private var advancedTrackingEnabled = false
+    private var periodicScanJob: Job? = null
+
+    /** Called from the UI when the "Advanced Player Tracking" toggle is switched on/off. */
+    fun setAdvancedTrackingEnabled(enabled: Boolean) {
+        advancedTrackingEnabled = enabled
+        periodicScanJob?.cancel()
+        if (enabled) {
+            scanForAdditionalSessions()
+            // Notifications trigger a scan on change, but a slow periodic
+            // sweep too, in case a player starts playing without ever
+            // updating its notification.
+            periodicScanJob = serviceScope.launch {
+                while (isActive) {
+                    delay(10_000)
+                    scanForAdditionalSessions()
+                }
+            }
+        }
+    }
     
     override fun onBind(intent: Intent?): IBinder {
         return binder
@@ -173,6 +216,7 @@ class AudioProcessingService : Service() {
         super.onDestroy()
         Log.d(TAG, "Service onDestroy")
 
+        periodicScanJob?.cancel()
         try {
             unregisterReceiver(sessionReceiver)
         } catch (e: Exception) {
